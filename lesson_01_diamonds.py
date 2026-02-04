@@ -9,7 +9,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, root_mean_squared_error, r2_score
 
 learn_file='datasets/diamonds_learn.csv'
-predict_file='datasets/diamonds_act_small.csv'
+predict_file='datasets/diamonds_act.csv'
 
 
 def read_file_generator(file):
@@ -46,7 +46,7 @@ if __name__ == '__main__':
 
     print('Выборка для обучения: ', count_rows(learn_file), ' строк ', count_columns(learn_file), ' столбцов')
 
-    X = lf[['carat', 'depth', 'table', #TODO 'x', 'y', 'z',
+    X = lf[['carat', 'depth', 'table', # "\'x\'", "\'y\'", "\'z\'",
             'cut_Fair', 'cut_Good', 'cut_Ideal', 'cut_Prem', 'cut_V_good',
             'color_D', 'color_E', 'color_F', 'color_G', 'color_H', 'color_I', 'color_J',
             'clarity_I1', 'clarity_IF', 'clarity_SI1', 'clarity_SI2', 'clarity_VS1', 'clarity_VS2', 'clarity_VVS1', 'clarity_VVS2'
@@ -61,7 +61,7 @@ if __name__ == '__main__':
     plt.xlabel('Carat')
     plt.ylabel('Price')
     plt.title('Carat vs. Price')
-    # plt.show()
+    plt.show()
 
     """
     ### Задание 2 ###
@@ -69,7 +69,7 @@ if __name__ == '__main__':
 
     corr = X.corr()
     sb.heatmap(corr, cmap="Blues", annot=True)
-    # plt.show()
+    plt.show()
 
     """
     ### Задание 3 ###
@@ -84,7 +84,7 @@ if __name__ == '__main__':
 
     corr = X2.corr()
     sb.heatmap(corr, cmap="Blues", annot=True)
-    #plt.show()
+    plt.show()
 
     # Примечание: наиборльшая корреляция - с каратами
 
@@ -96,7 +96,7 @@ if __name__ == '__main__':
       - в train файлике небольшой набор данных, т.к. очень много времени заняла их подготовка
     """
 
-    Xtest = pf[['carat', 'depth', 'table', #TODO 'x', 'y', 'z',
+    Xtest = pf[['carat', 'depth', 'table', # "\'x\'", "\'y\'", "\'z\'",
             'cut_Fair', 'cut_Good', 'cut_Ideal', 'cut_Prem', 'cut_V_good',
             'color_D', 'color_E', 'color_F', 'color_G', 'color_H', 'color_I', 'color_J',
             'clarity_I1', 'clarity_IF', 'clarity_SI1', 'clarity_SI2', 'clarity_VS1', 'clarity_VS2', 'clarity_VVS1', 'clarity_VVS2'
@@ -104,10 +104,6 @@ if __name__ == '__main__':
     ytest = pf['price']
 
     print('Выборка для прогноза: ', count_rows(predict_file), ' строк ', count_columns(predict_file), ' столбцов')
-
-    # Для графика зависимости цены от каратов
-    carat_values = lf['carat']
-    price_values = lf['price']
 
     model = LinearRegression() # модель с параметрами по умолчанию
     model.fit(X, y)  # обучаем
@@ -122,7 +118,7 @@ if __name__ == '__main__':
     plt.xlabel('Actual')
     plt.ylabel('Predicted')
     plt.title('Actual vs Predicted')
-    #plt.show()
+    plt.show()
 
     """
     ### Задание 5 ### Вычислите значение метрик MSE и RMSE на тестовых данных. Ответ округлите до десятых.
@@ -132,6 +128,11 @@ if __name__ == '__main__':
     print(f"MSE: {mean_squared_error(ytest, ypred):.2f}")
     print(f"RMSE: {root_mean_squared_error(ytest, ypred):.2f}")
 
-    # R2 Score: -27.00
-    # MSE: 837610.95
-    # RMSE: 915.21
+    # R2 Score: -2.04
+    # MSE: 1160016.87
+    # RMSE: 1077.04
+
+    # без x, y, z:
+    # R2 Score: -1.29
+    # MSE: 875267.76
+    # RMSE: 935.56
