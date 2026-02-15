@@ -1,4 +1,6 @@
+catboost
 pandas
-scikit-learn
+scikit-learn==1.5.2
 seaborn
 matplotlib
+tqdm
