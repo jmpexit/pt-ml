@@ -36,7 +36,7 @@ if __name__ == '__main__':
         """Returns the max length of consecutive vowels and consonants."""
         if not name:
             return 0, 0
-        vowels = "aeiouy"
+        vowels = "aeiou"
 
         # Max consecutive vowels
         v_matches = re.findall(r'[aeiouy]+', name)
@@ -199,19 +199,11 @@ if __name__ == '__main__':
     ]
 
     """
-    Важность признаков:
-    [0.05102867 0.07186947 0.04580813 0.01835111 0.10909196 0.07831181
- 0.12076449 0.07343849 0.02575232 0.00894956 0.00322539 0.05058474
- 0.03442163 0.01287467 0.00079844 0.0777936  0.07220107 0.05725997
- 0.06579355 0.00648774 0.01519317]
-
-    """
-
-    """
     # DGA data + PolynomialFeatures
     # """
     train = pd.read_csv("datasets/dga_train.csv")
     test = pd.read_csv("datasets/dga_test.csv")
+   # train = train.sample(5_000_000, random_state=42)
 
     X_train = np.array([
       extract_features(str(d))
@@ -244,7 +236,7 @@ if __name__ == '__main__':
     del X_test_poly
     gc.collect()
 
-    print(f"Итоговая матрица: {X_train_scaled.shape}, размер в памяти: {X_train_scaled.nbytes / 1024 ** 3:.2f} ГБ")
+   # print(f"Итоговая матрица: {X_train_scaled.shape}, размер в памяти: {X_train_scaled.nbytes / 1024 ** 3:.2f} ГБ")
 
     cb = CatBoostClassifier(
       iterations=5000,

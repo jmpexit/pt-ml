@@ -200,125 +200,9 @@ if __name__ == '__main__':
     """
     # DGA data + PolynomialFeatures
     # """
-    # train = pd.read_csv("datasets/dga_train.csv")
-    # test = pd.read_csv("datasets/dga_test.csv")
-    #
-    # X_train = np.array([
-    #     extract_features(str(d))
-    #     for d in tqdm(train["domain"], desc="Extracting train features")
-    # ])
-    # y_train = train["label"].values
-    #
-    # X_test = np.array([
-    #     extract_features(str(d))
-    #     for d in tqdm(test["domain"], desc="Extracting test features")
-    # ])
-    #
-    # poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
-    # X_train_poly = poly.fit_transform(X_train).astype('float32')
-    #
-    # # Освобождаем память от старого X
-    # del X_train
-    # gc.collect()
-    #
-    # scaler = StandardScaler()
-    # X_train_scaled = scaler.fit_transform(X_train_poly).astype('float32')
-    #
-    # del X_train_poly
-    # gc.collect()
-    #
-    # X_test_poly = poly.transform(X_test).astype('float32')
-    # X_test_scaled = scaler.transform(X_test_poly).astype('float32')
-    #
-    # del X_test
-    # del X_test_poly
-    # gc.collect()
-    #
-    # print(f"Итоговая матрица: {X_train_scaled.shape}, размер в памяти: {X_train_scaled.nbytes / 1024 ** 3:.2f} ГБ")
-    #
-    # X_test_final = pd.DataFrame(X_test_scaled, columns=poly.get_feature_names_out())
-    # X_test_final['domain_raw'] = test["domain"].astype(str).values
-    #
-    # X_train_final = pd.DataFrame(X_train_scaled, columns=poly.get_feature_names_out())
-    # X_train_final['domain_raw'] = train['domain'].astype(str).values
-    #
-    # del X_test_scaled
-    # del X_train_scaled
-    # gc.collect()
-    #
-    # test_pool = Pool(
-    #     data=X_test_final,
-    #     text_features=['domain_raw']
-    # )
-    #
-    # train_pool = Pool(
-    #     data=X_train_final,
-    #     text_features=['domain_raw']
-    # )
-    #
-    # cb = CatBoostClassifier(
-    #     iterations=5000,
-    #     depth=10,  # Глубина 10 с полиномами может быть слишком тяжелой для VRAM
-    #     learning_rate=0.03,
-    #     l2_leaf_reg=5,
-    #     task_type="GPU",
-    #     devices='0',
-    #     bootstrap_type='Bayesian',
-    #     random_seed=42,
-    #     random_strength=2,
-    #     bagging_temperature=1,  # Adds diversity to trees
-    #     od_type='Iter',  # Overfit detector.  tells CatBoost to monitor the error
-    #     od_wait=200,  # If the score doesn't improve for N iterations in a row, stop training
-    #     verbose=100
-    # )
-    #
-    # # test_probs = []
-    # # # Split indices into 7 parts
-    # # for chunk in np.array_split(X_test_final, 7):
-    # #     chunk_pool = Pool(data=chunk, text_features=['domain_raw'])
-    # #     probs = cb.predict_proba(chunk_pool)[:, 1]
-    # #     test_probs.append(probs)
-    # #
-    # # test_probs = np.concatenate(test_probs)
-    #
-    # cb.fit(train_pool)  # обучаем модель
-    #
-    # # Сохраненяем модель + инструменты трансформации
-    # cb.save_model("dga_poly_model.cbm")
-    # joblib.dump(scaler, "scaler.pkl")
-    # joblib.dump(poly, "poly.pkl")
-    #
-    # cb_train_probs = cb.predict_proba(train_pool)[:, 1]
-    # fbmax = -1
-    # thmax = -1
-    #
-    # for th in tqdm(np.arange(0.01, 1.01, 0.05), desc="Поиск порога"):
-    #     current_classes = cb_train_probs > th
-    #     current_fbeta = fbeta_score(y_train, current_classes, beta=0.5)  # вычисляем f_beta скор
-    #
-    #     if current_fbeta > fbmax:
-    #         fbmax = current_fbeta
-    #         thmax = th
-    #
-    # print(f"Лучший F0.5 на Train: {fbmax:.4f} при пороге: {thmax}")
-    #
-    # del train_pool
-    # del X_train_final
-    # gc.collect()
-    #
-    # cb_test_probs = cb.predict_proba(test_pool)[:, 1]  # Получаем вероятности для теста
-    # y_pred_classes = (cb_test_probs > thmax).astype(int)  # Применяем найденный порог
-    #
-    # test["label"] = y_pred_classes.astype(int)  # Сохраняем результат в DataFrame
-    # test[["id", "label"]].to_csv("submission_CatBoost_poly_pool.csv", index=False)
-
-
-    """
-    Samples + PolynomialFeatures
-    """
-    data = pd.read_csv("datasets/dga_train.csv")
-  #  data = data.sample(2000000, random_state=42)
-    train, test = train_test_split(data, test_size=0.2, random_state=42)
+    train = pd.read_csv("datasets/dga_train.csv")
+    test = pd.read_csv("datasets/dga_test.csv")
+    train = train.sample(5_000_000, random_state=42)
 
     X_train = np.array([
         extract_features(str(d))
@@ -330,8 +214,6 @@ if __name__ == '__main__':
         extract_features(str(d))
         for d in tqdm(test["domain"], desc="Extracting test features")
     ])
-
-    y_test = test["label"].values
 
     poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
     X_train_poly = poly.fit_transform(X_train).astype('float32')
@@ -372,6 +254,7 @@ if __name__ == '__main__':
 
     train_pool = Pool(
         data=X_train_final,
+        label=y_train,
         text_features=['domain_raw']
     )
 
@@ -385,9 +268,18 @@ if __name__ == '__main__':
         bootstrap_type='Bayesian',
         random_seed=42,
         random_strength=2,
-        bagging_temperature=1,      # Adds diversity to trees
-        od_type='Iter',            # Overfit detector.  tells CatBoost to monitor the error
-        od_wait=200,  # If the score doesn't improve for N iterations in a row, stop training
+        bagging_temperature=1,  # Adds diversity to trees
+        od_type='Iter',  # Overfit detector.  tells CatBoost to monitor the error
+        od_wait=500,  # If the score doesn't improve for N iterations in a row, stop training
+        dictionaries=[
+            {
+                'dictionary_id': 'Unigram',
+                'occurrence_lower_bound': '1' # Set to 1 to catch everything
+            }
+        ],
+        feature_calcers=[
+            'BoW:top_tokens_count=1000:dictionary_id=BiGram'  # ADDED dictionary_id HERE
+        ],
         verbose=100
     )
 
@@ -425,12 +317,132 @@ if __name__ == '__main__':
     del X_train_final
     gc.collect()
 
-    cb_test_probs = cb.predict_proba(test_pool)[:, 1] # Получаем вероятности для теста
-    y_pred_classes = (cb_test_probs > thmax).astype(int) # Применяем найденный порог
+    cb_test_probs = cb.predict_proba(test_pool)[:, 1]  # Получаем вероятности для теста
+    y_pred_classes = (cb_test_probs > thmax).astype(int)  # Применяем найденный порог
 
-    fbeta_test = fbeta_score(y_test, y_pred_classes, beta=0.5)  # вычисляем f_beta скор
-    print(f"F0.5 на Test: {fbeta_test:.4f}")
-
-    test['id'] = test.index
     test["label"] = y_pred_classes.astype(int)  # Сохраняем результат в DataFrame
-    test[["id", "label"]].to_csv("submission_CatBoost_train_poly_pool.csv", index=False)
+    test[["id", "label"]].to_csv("submission_CatBoost_poly_pool.csv", index=False)
+
+
+    """
+    Samples + PolynomialFeatures
+    """
+    # data = pd.read_csv("datasets/dga_train.csv")
+    # data = data.sample(12_000_000, random_state=42)
+    # train, test = train_test_split(data, test_size=0.2, random_state=42)
+    #
+    # X_train = np.array([
+    #     extract_features(str(d))
+    #     for d in tqdm(train["domain"], desc="Extracting train features")
+    # ])
+    # y_train = train["label"].values
+    #
+    # X_test = np.array([
+    #     extract_features(str(d))
+    #     for d in tqdm(test["domain"], desc="Extracting test features")
+    # ])
+    #
+    # y_test = test["label"].values
+    #
+    # poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
+    # X_train_poly = poly.fit_transform(X_train).astype('float32')
+    #
+    # # Освобождаем память от старого X
+    # del X_train
+    # gc.collect()
+    #
+    # scaler = StandardScaler()
+    # X_train_scaled = scaler.fit_transform(X_train_poly).astype('float32')
+    #
+    # del X_train_poly
+    # gc.collect()
+    #
+    # X_test_poly = poly.transform(X_test).astype('float32')
+    # X_test_scaled = scaler.transform(X_test_poly).astype('float32')
+    #
+    # del X_test
+    # del X_test_poly
+    # gc.collect()
+    #
+    # print(f"Итоговая матрица: {X_train_scaled.shape}, размер в памяти: {X_train_scaled.nbytes / 1024 ** 3:.2f} ГБ")
+    #
+    # X_test_final = pd.DataFrame(X_test_scaled, columns=poly.get_feature_names_out())
+    # X_test_final['domain_raw'] = test["domain"].astype(str).values
+    #
+    # X_train_final = pd.DataFrame(X_train_scaled, columns=poly.get_feature_names_out())
+    # X_train_final['domain_raw'] = train['domain'].astype(str).values
+    #
+    # del X_test_scaled
+    # del X_train_scaled
+    # gc.collect()
+    #
+    # test_pool = Pool(
+    #     data=X_test_final,
+    #     text_features=['domain_raw']
+    # )
+    #
+    # train_pool = Pool(
+    #     data=X_train_final,
+    #     label=y_train,           # This must be the separate y_train array
+    #     text_features=['domain_raw']
+    # )
+    #
+    # cb = CatBoostClassifier(
+    #     iterations=5000,
+    #     depth=10,  # Глубина 10 с полиномами может быть слишком тяжелой для VRAM
+    #     learning_rate=0.03,
+    #     l2_leaf_reg=5,
+    #     task_type="GPU",
+    #     devices='0',
+    #     bootstrap_type='Bayesian',
+    #     random_seed=42,
+    #     random_strength=2,
+    #     bagging_temperature=1,      # Adds diversity to trees
+    #     od_type='Iter',            # Overfit detector.  tells CatBoost to monitor the error
+    #     od_wait=500,  # If the score doesn't improve for N iterations in a row, stop training
+    #     verbose=100
+    # )
+    #
+    # # test_probs = []
+    # # # Split indices into 7 parts
+    # # for chunk in np.array_split(X_test_final, 7):
+    # #     chunk_pool = Pool(data=chunk, text_features=['domain_raw'])
+    # #     probs = cb.predict_proba(chunk_pool)[:, 1]
+    # #     test_probs.append(probs)
+    # #
+    # # test_probs = np.concatenate(test_probs)
+    #
+    # cb.fit(train_pool)  # обучаем модель
+    #
+    # # Сохраненяем модель + инструменты трансформации
+    # cb.save_model("dga_poly_model.cbm")
+    # joblib.dump(scaler, "scaler.pkl")
+    # joblib.dump(poly, "poly.pkl")
+    #
+    # cb_train_probs = cb.predict_proba(train_pool)[:, 1]
+    # fbmax = -1
+    # thmax = -1
+    #
+    # for th in tqdm(np.arange(0.01, 1.01, 0.05), desc="Поиск порога"):
+    #     current_classes = cb_train_probs > th
+    #     current_fbeta = fbeta_score(y_train, current_classes, beta=0.5)  # вычисляем f_beta скор
+    #
+    #     if current_fbeta > fbmax:
+    #         fbmax = current_fbeta
+    #         thmax = th
+    #
+    # print(f"Лучший F0.5 на Train: {fbmax:.4f} при пороге: {thmax}")
+    #
+    # del train_pool
+    # del X_train_final
+    # gc.collect()
+    #
+    # cb_test_probs = cb.predict_proba(test_pool)[:, 1] # Получаем вероятности для теста
+    # y_pred_classes = (cb_test_probs > thmax).astype(int) # Применяем найденный порог
+    #
+    # fbeta_test = fbeta_score(y_test, y_pred_classes, beta=0.5)  # вычисляем f_beta скор
+    # print(f"F0.5 на Test: {fbeta_test:.4f}")
+    #
+    # test['id'] = test.index
+    # test["label"] = y_pred_classes.astype(int)  # Сохраняем результат в DataFrame
+    # test[["id", "label"]].to_csv("submission_CatBoost_train_poly_pool.csv", index=False)
