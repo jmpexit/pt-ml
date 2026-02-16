@@ -1,6 +1,10 @@
 catboost
+joblib
 pandas
 scikit-learn==1.5.2
 seaborn
 matplotlib
 tqdm
+ydata_profiling
+setuptools==69.5.1
+category_encoders

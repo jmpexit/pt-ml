@@ -158,6 +158,11 @@ if __name__ == '__main__':
         probs = [count / len(text) for count in counts.values()]
         return -sum(p * math.log2(p) for p in probs)
 
+    def digit_ratio(name):
+        length = len(name)
+        digits = sum(c.isdigit() for c in name)
+        return digits / max(1, length)
+
 
     def extract_features(domain):
         domain = str(domain).lower().strip()
@@ -170,10 +175,14 @@ if __name__ == '__main__':
         # Считаем базовые показатели
         domain_len = len(domain)
         name_len = len(name)
+        letters = sum(c.isalpha() for c in name)
 
         # 1. Цифры и спецсимволы
         digit_count = sum(c.isdigit() for c in name)
         hyphen_count = name.count('-')
+        double_hyphen_count = name.count('--')
+        dot_count = domain.count(".")
+        digit_ratio_value = digit_ratio(name)  # доля цифр
 
         # 2. признаки "читаемости"
         vowels = "aeiou"
@@ -201,24 +210,27 @@ if __name__ == '__main__':
         # 6. Наличие последовательных цифр (часто бывает в DGA)
         has_digit_seq = 1 if any(name[i:i + 2].isdigit() for i in range(len(name) - 1)) else 0
 
-
-
         return [
-            domain_len,  # 1. Общая длина
-            name_len,  # 2. Длина без TLD
-            digit_count,  # 3. Сколько цифр
-            vowel_ratio,  # 4. Доля гласных
-            consonant_ratio,  # 5. Доля согласных (ДОБАВИЛИ)
-            diff_vowels_consonants,  # 6. Перекос в сторону согласных (ДОБАВИЛИ)
-            entropy,  # 7. Хаотичность
-            unique_chars_ratio,  # 8. Разнообразие букв
-            is_suspicious_tld,  # 9. Опасная зона (.xyz и т.д.)
-            has_digit_seq  # 10. Цепочки цифр
+            domain_len,
+            name_len,
+            letters,
+            digit_count,
+            vowel_ratio,
+            consonant_ratio,
+            diff_vowels_consonants,
+            entropy,
+            unique_chars_ratio,
+            is_suspicious_tld,
+            has_digit_seq,
+            hyphen_count,
+            dot_count,
+            digit_ratio_value,
+            double_hyphen_count
         ]
 
     train = pd.read_csv("datasets/dga_train.csv") #pd.read_csv("/kaggle/input/dga-domain-detection-challenge-i/train.csv")
     test =  pd.read_csv("datasets/dga_test.csv") # pd.read_csv("/kaggle/input/dga-domain-detection-challenge-i/test.csv")
-   # train = train.sample(800_000, random_state=42)
+    train = train.sample(800_000, random_state=42)
 
     X_train = np.array([
         extract_features(str(d))
@@ -264,19 +276,19 @@ if __name__ == '__main__':
 
     """ Используем f2_scorer"""
     f2_scorer = make_scorer(fbeta_score, beta=2)
-    # params = {
-    #     'depth': [7, 8, 9, 10],  # Глубина деревьев (чем выше, тем сложнее зависимости)
-    #     'learning_rate': [0.03, 0.1, 0.15],  # Скорость обучения
-    #     'bootstrap_type': ['Bayesian', 'Bernoulli'],  # Как модель выбирает подмножества данных
-    #     'l2_leaf_reg': [1, 3, 5, 7],  # Регуляризация (чтобы не переобучиться)
-    #     'random_strength': [1, 2]  # Добавляет случайности, чтобы не "зазубривать" трейн
-    # }
     params = {
-        'depth': [7, 8, 10],
-        'learning_rate': [0.1, 0.15],
-        'bootstrap_type': ['Bayesian', 'Bernoulli'],
-        'l2_leaf_reg': [3, 5, 7]
+        'depth': [8, 10, 12],  # Глубина деревьев (чем выше, тем сложнее зависимости)
+        'learning_rate': [ 0.1, 0.15],  # Скорость обучения
+        'bootstrap_type': ['Bayesian', 'Bernoulli'],  # Как модель выбирает подмножества данных
+        'l2_leaf_reg': [3, 5, 7],  # Регуляризация (чтобы не переобучиться)
+        'random_strength': [1, 2]  # Добавляет случайности, чтобы не "зазубривать" трейн
     }
+    # params = {
+    #     'depth': [7, 8, 10],
+    #     'learning_rate': [0.1, 0.15],
+    #     'bootstrap_type': ['Bayesian', 'Bernoulli'],
+    #     'l2_leaf_reg': [3, 5, 7]
+    # }
 
     gs = GridSearchCV(  # Настраиваем поиск
         estimator=cb,  # наш CatBoost
@@ -330,23 +342,30 @@ if __name__ == '__main__':
         task_type="GPU", # "CPU" / Если есть видеокарта NVIDIA, поставить "GPU" - будет в 10 раз быстрее
         devices='0',  # Индекс моей видеокарты
         thread_count=-1, # Использует все ядра без копирования данных в памяти
-        verbose=100  # будет писать лог каждые 100 деревьев, чтобы не было скучно
+        verbose=100,  # будет писать лог каждые 100 деревьев, чтобы не было скучно
+        # depth=12,
+        # l2_leaf_reg=3,
+        learning_rate=0.15,
+        bootstrap_type='Bayesian',
+        random_strength=2
     )
+
+
 
     # Обучаем ОДИН РАЗ на всех тренировочных данных
     final_model.fit(X_train, y_train)
 
     """ ПРЕДСКАЗЫВАЕМ на рабочей выборке """
     test_probs = final_model.predict_proba(X_test)[:, 1]  # Получаем вероятности (самый точный инструмент)
-    final_classes = test_probs > thmax  # Применяем найденный порог
+    final_pred_classes = test_probs > thmax  # Применяем найденный порог
 
     # """ Проверяем метрику  """  # в данных чаленжа нет values в тестовой выборке, поэтому скипаем
-    # final_f2 = fbeta_score(y_test, final_classes, beta=2)
+    # final_f2 = fbeta_score(y_test, final_pred_classes, beta=2)
     # print(f"Финальный F2 на тесте с порогом {thmax}: {final_f2:.4f}")
 
     """ Сохраняем результат """
-    test["label"] = final_classes.astype(int) # Сохраняем результат в DataFrame
-    test[["id", "label"]].to_csv("submission_CatBoost_GridSearchCV.csv", index=False)
+    test["label"] = final_pred_classes.astype(int) # Сохраняем результат в DataFrame
+    test[["id", "label"]].to_csv("submission_CatBoost_GridSearch_sample.csv", index=False)
     test[["domain", "label"]].to_csv("predict_CatBoost.csv", index=False)  # [optional] датасет с предсказанными значениями
 
 
@@ -356,6 +375,11 @@ if __name__ == '__main__':
     Лучшие параметры: {'depth': 8, 'l2_leaf_reg': 5, 'learning_rate': 0.1}
     Лучший F2-score: 0.7511554857315512
     Оптимальный порог: 0.16000000000000003 (F2 на train: 0.8615)
+    
+    sample
+    Лучшие параметры: {'bootstrap_type': 'Bayesian', 'depth': 12, 'l2_leaf_reg': 3, 'learning_rate': 0.15, 'random_strength': 2}
+Лучший F2-score: 0.7697926314895059
+Оптимальный порог: 0.16000000000000003 (F2 на train: 0.8702)
     """
 
     """
