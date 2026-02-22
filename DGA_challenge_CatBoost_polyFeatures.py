@@ -162,12 +162,12 @@ if __name__ == '__main__':
             dot_count,
             digit_ratio_value,
             double_hyphen_count,
-            # vow_cons_dep
+            # vow_cons_dep,
             # ent_name_len_dep,
             # ent_name_dom_dep,
-            # ent_name_let_dep
+            # ent_name_let_dep,
             # digit_dep,
-            # digit_dep2
+            # digit_dep2,
             max_v,           # High in DGA if vowels clump
             max_c,           # VERY High in DGA (e.g., 'zrtpql')
             digit_trans,     # High in DGA (e.g., 'abc12def3')
@@ -203,7 +203,8 @@ if __name__ == '__main__':
     # """
     train = pd.read_csv("datasets/dga_train.csv")
     test = pd.read_csv("datasets/dga_test.csv")
-   # train = train.sample(5_000_000, random_state=42)
+    train = train.sample(5_000_000, random_state=42)
+    train = train.drop_duplicates()
 
     X_train = np.array([
       extract_features(str(d))
@@ -236,12 +237,12 @@ if __name__ == '__main__':
     del X_test_poly
     gc.collect()
 
-   # print(f"Итоговая матрица: {X_train_scaled.shape}, размер в памяти: {X_train_scaled.nbytes / 1024 ** 3:.2f} ГБ")
+    print(f"Итоговая матрица: {X_train_scaled.shape}, размер в памяти: {X_train_scaled.nbytes / 1024 ** 3:.2f} ГБ")
 
     cb = CatBoostClassifier(
       iterations=5000,
       depth=10,  # Глубина 10 с полиномами может быть слишком тяжелой для VRAM
-      learning_rate=0.03,
+      learning_rate=0.01,
       l2_leaf_reg=5,
       task_type="GPU",
       devices='0',
@@ -282,7 +283,7 @@ if __name__ == '__main__':
     y_pred_classes = (cb_test_probs > thmax).astype(int) # Применяем найденный порог
 
     test["label"] = y_pred_classes.astype(int)  # Сохраняем результат в DataFrame
-    test[["id", "label"]].to_csv("submission_CatBoost_poly.csv", index=False)
+    test[["id", "label"]].to_csv("submission_CatBoost_poly_drop_doubles.csv", index=False)
 
     """
     Samples + PolynomialFeatures
