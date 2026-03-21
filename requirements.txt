@@ -17,3 +17,5 @@ ydata_profiling
 setuptools==69.5.1
 category_encoders
 numpy==1.26.4
+Pillow
+torchsummary
