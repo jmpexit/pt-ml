@@ -63,7 +63,6 @@ class BatchEnglishExtractor:
                 img_path = os.path.join(folder_path, filename)
 
                 try:
-                    # --- ГЛАВНОЕ ИЗМЕНЕНИЕ ---
                     # EasyOCR возвращает список кортежей: (bbox, text, confidence)
                     result = self.reader.readtext(img_path)
 
@@ -93,8 +92,75 @@ class BatchEnglishExtractor:
         print(f"\nГотово! Все слова сохранены в: {output_file}")
 
 
+"""Очистка и сбор статистики"""
+from collections import Counter
+import pandas as pd
+
+def analyze_frequency(input_file, top_n=10):
+    """Считает частотность и выводит статистику в консоль."""
+    with open(input_file, 'r', encoding='utf-8') as file:
+        words = [line.strip() for line in file if line.strip()]
+
+    # Считаем частотность
+    word_counts = Counter(words)
+
+    # Сортируем по популярности (от самых частых к редким)
+    common_words = word_counts.most_common()
+
+    print(f"--- Статистика файла: {input_file} ---")
+    print(f"Всего слов (с повторами): {len(words)}")
+    print(f"Уникальных слов: {len(word_counts)}")
+    print(f"\nТоп-{top_n} частых слов:")
+
+    for word, count in common_words[:top_n]:
+        print(f"{word}: {count}")
+
+    return common_words
+
+
+def remove_top_noise(input_file, noise_count=7):
+    """Находит топ N самых частых слов и удаляет их из файла полностью."""
+    with open(input_file, 'r', encoding='utf-8') as file:
+        all_words = [line.strip() for line in file if line.strip()]
+
+    # Находим, какие именно слова являются шумом
+    word_counts = Counter(all_words)
+    noise_words = set(word for word, count in word_counts.most_common(noise_count))
+    # Когда делаем if word not in noise_words, Python в случае со списком каждый раз пробегает по нему.
+    # В случае с set (множеством) поиск происходит мгновенно. На 600 словах разницы нет, но на 10 000+
+    # это станет заметно.
+
+    print(f"Удаляем шум: {', '.join(noise_words)}")
+
+    # Оставляем только те слова, которых нет в списке шума
+    filtered_words = [word for word in all_words if word not in noise_words]
+
+    with open(input_file, 'w', encoding='utf-8') as f:
+        for word in filtered_words:
+            f.write(f"{word}\n")
+
+    print(f"Файл {input_file} очищен от шума")
+    return filtered_words # Опционально
+
+def remove_duplicates(input_file):
+    """Читает файл и возвращает список уникальных слов в порядке их появления."""
+    with open(input_file, 'r', encoding='utf-8') as file:
+        words = [line.strip() for line in file if line.strip()]
+
+    # Использование dict.fromkeys сохраняет порядок первого появления слова
+    unique_words = list(dict.fromkeys(words))
+
+    with open(input_file, 'w', encoding='utf-8') as f:
+        for word in unique_words:
+            f.write(f"{word}\n")
+
+    print(f"Файл {input_file} успешно обновлен.")
+
+    return unique_words # Опционально
+
 # --- ЗАПУСК ---
 if __name__ == "__main__":
+    """ Распознаем слова """
     # Проверка существования папки перед запуском
     if not os.path.exists(test_path):
         try:
@@ -102,37 +168,27 @@ if __name__ == "__main__":
             print(f"Папка '{test_path}' создана. Пожалуйста, положите туда картинки.")
         except OSError:
             print(f"Не удалось создать папку {test_path}. Проверьте пути.")
+    # Формируем файл со словами
     else:
         extractor = BatchEnglishExtractor()
         extractor.process_folder(test_path, OUTPUT_FILE)
 
+    """ Подготовка таблицы уникальных слов """
+    # Смотрим статистику
+    analyze_frequency(OUTPUT_FILE, top_n=20)
+
+    # Находим топ-N слов-шума, подлежащих удалению, и перезаписываем файл
+    remove_top_noise(OUTPUT_FILE, noise_count=7)
+
+    # Снова смотрим статистику
+    analyze_frequency(OUTPUT_FILE, top_n=20)
+
+    # Очищаем файл от дублей
+    remove_duplicates(OUTPUT_FILE)
+
+    # Снова смотрим статистику
+    analyze_frequency(OUTPUT_FILE, top_n=5)
 
 
-###для очистки и сбора статистики:
-# from collections import Counter
-# import pandas as pd
-#
-# def clean_and_analyze(input_file):
-#     # Читаем все слова из вашего файла
-#     with open(input_file, 'r', encoding='utf-8') as f:
-#         words = [line.strip() for line in f if line.strip()]
-#
-#     # Считаем частотность
-#     word_counts = Counter(words)
-#
-#     # Сортируем по популярности (от самых частых к редким)
-#     common_words = word_counts.most_common()
-#
-#     print(f"Всего слов распознано: {len(words)}")
-#     print(f"Уникальных слов: {len(word_counts)}")
-#     print("\nТоп-10 самых частых слов:")
-#     for word, count in common_words[:10]:
-#         print(f"{word}: {count}")
-#
-#     # Сохраняем чистый список (без дублей) для GPT
-#     unique_words = [word for word, count in common_words]
-#
-#     return unique_words, common_words
-#
-# # Пример использования:
-# # unique_list, full_stats = clean_and_analyze(OUTPUT_FILE)
+
+
