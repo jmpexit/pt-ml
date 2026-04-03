@@ -8,6 +8,7 @@ category_encoders~=2.9.0
 datasets
 easyocr
 evaluate
+huggingface_hub
 ipython~=9.11.0
 joblib~=1.5.3
 langchain
