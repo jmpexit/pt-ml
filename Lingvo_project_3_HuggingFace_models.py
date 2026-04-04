@@ -4,6 +4,8 @@ import torch
 import easyocr  # <--- Замена Paddle
 from spellchecker import SpellChecker
 from tqdm.auto import tqdm
+from openpyxl.styles import Alignment
+from openpyxl import load_workbook
 
 import transformers
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -195,41 +197,76 @@ def process_all_words(input_path, results_path):
     print(f"Начинаю перевод {len(words_to_process)} слов в таблицу...")
 
     for word in words_to_process:
-   #     print(f"Перевожу: {word}...")
-
         try:
             raw_response = translate_word(word) # функция перевода
 
             # --- РАЗБИВКА ТЕКСТА НА КОЛОНКИ ---
-            # Мы ищем заголовки типа #### 1, #### 2 и т.д.
-            parts = re.split(r'#### \d+\.', raw_response)
+            # # Парсинг
+            parts = re.split(r'#### \d+\.\s?.*?\n', raw_response) # Регулярка ищет "#### номер. Заголовок" и убирает это
+            parts = [p.strip() for p in parts if p.strip()]  # Чистим пустые элементы, которые оставляет split
 
-            # Чистим части от лишних пробелов (берем части, если они есть)
-            translation = parts[1].strip() if len(parts) > 1 else "Ошибка парсинга"
-            examples = parts[2].strip() if len(parts) > 2 else ""
-            history = parts[3].strip() if len(parts) > 3 else ""
-            idioms = parts[4].strip() if len(parts) > 4 else ""
+            # translation = parts[1].strip() if len(parts) > 1 else "Ошибка парсинга" #TODO почему убрали?
+            # examples = parts[2].strip() if len(parts) > 2 else ""
+            # idioms = parts[3].strip() if len(parts) > 4 else ""
+
+            translation = parts[0] if len(parts) > 0 else "Ошибка парсинга"
+            examples = parts[1] if len(parts) > 1 else "Ошибка парсинга"
+            idioms = parts[2] if len(parts) > 2 else "Ошибка парсинга"
 
             # Добавляем строку в список
             rows.append({
                 "English Word": word.upper(),
-                "Перевод": translation,
-                "Примеры использования": examples,
-                "История и этимология": history,
-                "Устоявшиеся выражения": idioms
+                "Translation": translation,
+                "Examples ": examples,
+                "Phrases": idioms
             })
 
-            # Сохраняем после КАЖДОГО слова (на случай вылета)
+            # Сохраняем
             df = pd.DataFrame(rows)
-            df.to_excel(results_path, index=False)
+          #  df.to_excel(results_path, index=False)
+            df.to_excel(results_path, index=False, engine='openpyxl') #  сохраняем отформатированные данные с помощью openpyxl
 
+            # --- блок для красивого форматирования ---
+            wb = load_workbook(results_path)
+            ws = wb.active
+
+            # Задаем ширину колонок: Слово(15), Перевод(25), Остальное(50)
+            dims = {'A': 15, 'B': 25, 'C': 60, 'D': 60}
+            for col, value in dims.items():
+                ws.column_dimensions[col].width = value
+
+            for row in ws.iter_rows(min_row=2):
+                for cell in row:
+                    cell.alignment = Alignment(wrap_text=True, vertical='top', horizontal='left')
+
+            wb.save(results_path)
             print(f"[✓] {word} успешно добавлено в таблицу")
 
         except Exception as e:
             print(f"[!] Ошибка на слове {word}: {e}")
 
+#    df = pd.DataFrame(rows)
 
-    print(f"\n--- Сохранено в файл: {results_path} ---")
+    # --- БЛОК МЕТРИК ---
+    # Считаем, сколько раз встретилась фраза "Ошибка парсинга" в каждой колонке
+    error_summary = (df == "Ошибка парсинга").sum()
+    total_errors = error_summary.drop("English Word", errors='ignore').sum()
+    total_words = len(df)
+
+    print(f"\n" + "=" * 40)
+    print(f"📊 ОТЧЕТ ПО КАЧЕСТВУ (Всего слов: {total_words})")
+    print(f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯")
+    # Выводим статистику по каждой колонке
+    for column, count in error_summary.items():
+        if column != "English Word":  # Слово у нас всегда есть
+            print(f"• {column}: {count} ошибок")
+    # Считаем общий процент
+    error_rate = (total_errors / (total_words * 3)) * 100  # 3 колонки с контентом
+    print(f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯")
+    print(f"📈 Общий процент ошибок: {error_rate:.2f}%")
+    print("=" * 40)
+
+    print(f"\n--- Завершено. Таблица: {results_path} ---")
 
 
     """ WRAP
@@ -304,13 +341,12 @@ if __name__ == "__main__":
     # 3. Briefly explain the origin (etymology) or a fun historical fact about the word.
     # Keep the tone helpful and academic yet conversational."""
 
-    system_prompt = """Ты — профессиональный лингвист. 
-    Для каждого слова:
-    1. Дай точный перевод на русский (3-5 вариантов).
-    2. Приведи 3 примера использования в предложениях.
-    3. Напиши краткую историческую справку или этимологию (почему оно так звучит или как появилось).
-    4. Если с этим словом существует устоявшееся выражение - приведи его с исторической справкой.
-    Отвечай структурировано и интересно. Пиши строго на русском языке, избегай использования иероглифов или иностранных слов в пояснениях. Пиши лаконично."""
+    system_prompt = """Ты — профессиональный лингвист. Переводи английские слова для личного словаря. Начинай содержимое каждого пункта с новой строки сразу после заголовка.
+    Для каждого слова строго соблюдай структуру:
+    #### 1. Перевод на русский: только русские слова через запятую. постарайся найти 3-5 наиболее используемых вариантов.
+    #### 2. Примеры: 3 предложения на АНГЛИЙСКОМ, каждое - на новой строке, без перевода.
+    #### 3. Устоявшиеся выражения: если слово входит в какое-либо устоявшееся выражение, приведи пример на английском, с твоим комментарием или с исторической справкой на русском.
+    ВАЖНО: Пиши только на русском и английском. Избегай иероглифов и лишних пояснений. Отвечай структурировано и интересно."""
 
     # # Проверка на первом слове из списка
     #     # with open(OUTPUT_FILE, 'r', encoding='utf-8') as file:
