@@ -2,6 +2,8 @@ import os
 from huggingface_hub import snapshot_download
 from envs import HF_TOKEN
 
+
+""" Скачиваем модель """
 # Убираем предупреждения
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 

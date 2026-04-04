@@ -5,11 +5,18 @@ import easyocr  # <--- Замена Paddle
 from spellchecker import SpellChecker
 from tqdm.auto import tqdm
 
+import transformers
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+
+from envs import OPENROUTER_TOKEN, HF_TOKEN
+
 # --- ВАШИ ПУТИ (СОХРАНЕНЫ) ---
 BASE_PATH = r"C:\Users\Julie\PycharmProjects\pt-ml\datasets\lingvo"
 train_path = r"C:\Users\Julie\PycharmProjects\pt-ml\datasets\lingvo\train\train_set"
 test_path = r"C:\Users\Julie\PycharmProjects\pt-ml\datasets\lingvo\test"
 OUTPUT_FILE = os.path.join(BASE_PATH, "submission_final.csv")
+RESULTS_FILE = os.path.join(BASE_PATH, "translated_csv_dictionary.csv")
+EXCEL_FILE = os.path.join(BASE_PATH, "MyVocabulary.xlsx")
 
 
 class BatchEnglishExtractor:
@@ -158,6 +165,86 @@ def remove_duplicates(input_file):
 
     return unique_words # Опционально
 
+
+def translate_word(word):
+    """Генерирует перевод и справку для одного слова."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Переведи слово: {word}"}
+    ]
+
+    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer([text], return_tensors="pt").to(model.device)
+
+    # Генерируем ответ
+    outputs = model.generate(**inputs, max_new_tokens=800, temperature=0.7)
+
+    # Декодируем срезаем промпт, оставляем только ответ)
+    response = tokenizer.decode(outputs[0][len(inputs.input_ids[0]):], skip_special_tokens=True)
+    return response
+
+def process_all_words(input_path, results_path):
+    """Читает список слов и сохраняет переводы по одному."""
+
+    # Список для накопления строк таблицы
+    rows = []
+
+    with open(input_path, 'r', encoding='utf-8') as f:
+        words_to_process = [line.strip() for line in f if line.strip()]
+
+    print(f"Начинаю перевод {len(words_to_process)} слов в таблицу...")
+
+    for word in words_to_process:
+   #     print(f"Перевожу: {word}...")
+
+        try:
+            raw_response = translate_word(word) # функция перевода
+
+            # --- РАЗБИВКА ТЕКСТА НА КОЛОНКИ ---
+            # Мы ищем заголовки типа #### 1, #### 2 и т.д.
+            parts = re.split(r'#### \d+\.', raw_response)
+
+            # Чистим части от лишних пробелов (берем части, если они есть)
+            translation = parts[1].strip() if len(parts) > 1 else "Ошибка парсинга"
+            examples = parts[2].strip() if len(parts) > 2 else ""
+            history = parts[3].strip() if len(parts) > 3 else ""
+            idioms = parts[4].strip() if len(parts) > 4 else ""
+
+            # Добавляем строку в список
+            rows.append({
+                "English Word": word.upper(),
+                "Перевод": translation,
+                "Примеры использования": examples,
+                "История и этимология": history,
+                "Устоявшиеся выражения": idioms
+            })
+
+            # Сохраняем после КАЖДОГО слова (на случай вылета)
+            df = pd.DataFrame(rows)
+            df.to_excel(results_path, index=False)
+
+            print(f"[✓] {word} успешно добавлено в таблицу")
+
+        except Exception as e:
+            print(f"[!] Ошибка на слове {word}: {e}")
+
+
+    print(f"\n--- Сохранено в файл: {results_path} ---")
+
+
+    """ WRAP
+    from openpyxl.styles import Alignment
+
+# ... (после сохранения df.to_excel) ...
+with pd.ExcelWriter(output_excel, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
+    sheet = writer.sheets['Sheet1']
+    for row in sheet.iter_rows(min_row=2, max_col=5):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical='top')
+
+    """
+
+
 # --- ЗАПУСК ---
 if __name__ == "__main__":
     # """ Распознаем слова """
@@ -181,31 +268,31 @@ if __name__ == "__main__":
     """ Подключаем GPT 
     
     pip install huggingface_hub
-    huggingface-cli download Qwen/Qwen2.5-7B-Instruct 
+    pip install bitsandbytes accelerate
     """
-
-
-    import transformers
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-
-    from envs import OPENROUTER_TOKEN, HF_TOKEN
 
     print(f"CUDA Available: {torch.cuda.is_available()}")
     print(f"Current Device: {torch.cuda.get_device_name(0)}")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[✓] Using device: {device}")
 
-   # model_name = "meta-llama/Meta-Llama-3-8B-Instruct"  # требует верификафии перс.данных
+    #model_name = "meta-llama/Meta-Llama-3-8B-Instruct"  # требует верификафии перс.данных
    # model_name = "mistralai/Mistral-7B-Instruct-v0.3"  # прямой конкурент Llama. быстрая и хорошо понимает инструкции - не идет загрузка
     model_name = "Qwen/Qwen2.5-7B-Instruct"  # Очень точные переводы и примеры
-    # model_name = "Vakhitov/Vikhr-Llama-3.1-8B-Instruct-v2"  # "дообученная" Llama, которую российские разработчики адаптировали под русский язык
+   # model_name = "Vikhert/Vikhr-Llama-3.1-8B-Instruct-r24"  # "дообученная" Llama, которую российские разработчики адаптировали под русский язык
+
+    # Создаем конфигурацию для 8-битного режима
+    bnb_config = BitsAndBytesConfig(
+        load_in_8bit=True
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, token=HF_TOKEN) # TODO объяснить
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
       #  torch_dtype=torch.float16,
         device_map="auto",
-        # load_in_4bit=True  # если не хватает памяти
+        quantization_config=bnb_config,  # если не хватает памяти. или load_in_4bit=True
+        low_cpu_mem_usage=True, # Загрузка по частям и  создание пустого каркаса
         token=HF_TOKEN
     )
 
@@ -219,29 +306,73 @@ if __name__ == "__main__":
 
     system_prompt = """Ты — профессиональный лингвист. 
     Для каждого слова:
-    1. Дай точный перевод на русский.
-    2. Приведи 3 примера использования.
-    3. Добавь краткую историческую справку или этимологию (почему слово так называется)."""
+    1. Дай точный перевод на русский (3-5 вариантов).
+    2. Приведи 3 примера использования в предложениях.
+    3. Напиши краткую историческую справку или этимологию (почему оно так звучит или как появилось).
+    4. Если с этим словом существует устоявшееся выражение - приведи его с исторической справкой.
+    Отвечай структурировано и интересно. Пиши строго на русском языке, избегай использования иероглифов или иностранных слов в пояснениях. Пиши лаконично."""
 
-    # Читаем слова по N штук
-    with open(OUTPUT_FILE, 'r', encoding='utf-8') as fIle:
-        words_to_process = [line.strip() for line in fIle if line.strip()][:5]
+    # # Проверка на первом слове из списка
+    #     # with open(OUTPUT_FILE, 'r', encoding='utf-8') as file:
+    #     #     first_word = file.readline().strip()
+    #     #
+    #     # print(f"\n--- Результат для слова: {first_word} ---")
+    #     # print(translate_word(first_word))
 
-  #  words_list = "\n".join([f"- {w}" for w in words])
+    process_all_words(OUTPUT_FILE, EXCEL_FILE)
 
-    for word in words_to_process:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Переведи слово: {word}"}
-        ]
+#     # yield для файла # TODO
+#
+#     def word_generator(input_path):
+#     """Генератор, который читает файл и выдает по одному слову."""
+#     with open(input_path, 'r', encoding='utf-8') as f:
+#         for line in f:
+#             word = line.strip()
+#             if word:
+#                 yield word
+#
+# def translation_stream(input_path):
+#     """Генератор, который получает слово и возвращает готовый перевод."""
+#     for word in word_generator(input_path):
+#         print(f"--- Процессинг: {word} ---")
+#         try:
+#             # Твоя тяжелая функция с моделью
+#             result = translate_word(word)
+#             yield word, result
+#         except Exception as e:
+#             print(f"Ошибка на {word}: {e}")
+#             continue
+#
+# # --- ОСНОВНОЙ ЗАПУСК ---
+# if __name__ == "__main__":
+#     # Теперь мы просто 'подписываемся' на поток переводов
+#     for word, translation in translation_stream(OUTPUT_FILE):
+#         with open(RESULTS_FILE, 'a', encoding='utf-8') as out_f:
+#             out_f.write(f"\n{'='*30}\nWORD: {word.upper()}\n{translation}\n{'='*30}\n")
+#         print(f"[✓] {word} записано.")
 
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
-        generated_ids = model.generate(**model_inputs, max_new_tokens=512, temperature=0.7)
-        response = tokenizer.batch_decode(generated_ids[:, model_inputs.input_ids.shape[1]:], skip_special_tokens=True)[0]
 
-        print(f"\n=== {word.upper()} ===\n{response}")
+
+#   # Читаем слова по N штук
+#   with open(OUTPUT_FILE, 'r', encoding='utf-8') as fIle:
+#       words_to_process = [line.strip() for line in fIle if line.strip()][:5]
+#
+# #  words_list = "\n".join([f"- {w}" for w in words])
+  #
+  #   for word in words_to_process:
+  #       messages = [
+  #           {"role": "system", "content": system_prompt},
+  #           {"role": "user", "content": f"Переведи слово: {word}"}
+  #       ]
+  #
+  #       text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+  #       model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
+  #
+  #       generated_ids = model.generate(**model_inputs, max_new_tokens=512, temperature=0.7)
+  #       response = tokenizer.batch_decode(generated_ids[:, model_inputs.input_ids.shape[1]:], skip_special_tokens=True)[0]
+  #
+  #       print(f"\n=== {word.upper()} ===\n{response}")
 
 
     # """ Llama-3 Prompt """
