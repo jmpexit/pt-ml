@@ -168,7 +168,7 @@ def remove_duplicates(input_file):
     return unique_words # Опционально
 
 
-def translate_word(word):
+def translate_word(word, system_prompt):
     """Генерирует перевод и справку для одного слова."""
     messages = [
         {"role": "system", "content": system_prompt},
@@ -179,13 +179,33 @@ def translate_word(word):
     inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
     # Генерируем ответ
-    outputs = model.generate(**inputs, max_new_tokens=800, temperature=0.7)
+    outputs = model.generate(**inputs, max_new_tokens=800, temperature=0.1, do_sample=False) # низкая temperature=0.1. Для таблиц нам нужна максимальная строгость, а не творчество
 
     # Декодируем срезаем промпт, оставляем только ответ)
     response = tokenizer.decode(outputs[0][len(inputs.input_ids[0]):], skip_special_tokens=True)
     return response
 
-def process_all_words(input_path, results_path):
+def judge_adequacy(word, translation, judge_prompt):
+    """Модель оценивает свою (или чужую) работу."""
+    prompt = f"Word: {word}\nTranslation: {translation}\nRate adequacy (1-5):"
+
+    messages = [
+        {"role": "system", "content": judge_prompt},
+        {"role": "user", "content": prompt}
+    ]
+
+    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+
+    # Генерируем 2 токена (нам нужна только цифра)
+    outputs = model.generate(**inputs, max_new_tokens=2, temperature=0.1, do_sample=False)
+
+    score_raw = tokenizer.decode(outputs[0][len(inputs.input_ids[0]):], skip_special_tokens=True)
+
+    match = re.search(r'\d', score_raw)
+    return int(match.group()) if match else 0  # Возвращаем цифру или 0, если модель промолчала
+
+def process_all_words(input_path, results_path, system_prompt):
     """Читает список слов и сохраняет переводы по одному."""
 
     # Список для накопления строк таблицы
@@ -198,27 +218,29 @@ def process_all_words(input_path, results_path):
 
     for word in words_to_process:
         try:
-            raw_response = translate_word(word) # функция перевода
+            raw_response = translate_word(word, system_prompt) # функция перевода
 
-            # --- РАЗБИВКА ТЕКСТА НА КОЛОНКИ ---
-            # # Парсинг
-            parts = re.split(r'#### \d+\.\s?.*?\n', raw_response) # Регулярка ищет "#### номер. Заголовок" и убирает это
-            parts = [p.strip() for p in parts if p.strip()]  # Чистим пустые элементы, которые оставляет split
+            # # # --- РАЗБИВКА ТЕКСТА ---
 
-            # translation = parts[1].strip() if len(parts) > 1 else "Ошибка парсинга" #TODO почему убрали?
-            # examples = parts[2].strip() if len(parts) > 2 else ""
-            # idioms = parts[3].strip() if len(parts) > 4 else ""
+            # # ПАРСИНГ
+            # 1. Ищем блоки с помощью "заглядывания вперед" (?=\[|$) :
+            # Бери весь текст, пока не встретишь ЛИБО начало следующего тега [, ЛИБО самый конец сообщения $
+            # Это позволяет найти текст, даже если это последний блок в ответе
+            t_match = re.search(r'\[T\]\s*(.*?)\s*(?=\[|$)', raw_response, re.DOTALL)
+            e_match = re.search(r'\[E\]\s*(.*?)\s*(?=\[|$)', raw_response, re.DOTALL)
+            p_match = re.search(r'\[P\]\s*(.*?)\s*(?=\[|$)', raw_response, re.DOTALL)
 
-            translation = parts[0] if len(parts) > 0 else "Ошибка парсинга"
-            examples = parts[1] if len(parts) > 1 else "Ошибка парсинга"
-            idioms = parts[2] if len(parts) > 2 else "Ошибка парсинга"
+            # 2. Безопасно извлекаем текст. Если блок найден (.group(1)), чистим его (.strip()), если нет — пишем ошибку.
+            res_t = t_match.group(1).strip() if t_match else "Ошибка парсинга"
+            res_e = e_match.group(1).strip() if e_match else "Ошибка парсинга"
+            res_p = p_match.group(1).strip() if p_match else "Ошибка парсинга"
 
-            # Добавляем строку в список
+            # 3. Добавляем результат в список строк для Excel
             rows.append({
                 "English Word": word.upper(),
-                "Translation": translation,
-                "Examples ": examples,
-                "Phrases": idioms
+                "Translation": res_t,
+                "Examples": res_e,
+                "Phrases": res_p
             })
 
             # Сохраняем
@@ -229,13 +251,14 @@ def process_all_words(input_path, results_path):
             # --- блок для красивого форматирования ---
             wb = load_workbook(results_path)
             ws = wb.active
+             # TODO Если заметишь замедление, просто вынеси блок с load_workbook и Alignment за пределы цикла for, чтобы отформатировать всё один раз в самом конце. Но пока слов немного — оставляй внутри для надежности.
 
             # Задаем ширину колонок: Слово(15), Перевод(25), Остальное(50)
-            dims = {'A': 15, 'B': 25, 'C': 60, 'D': 60}
+            dims = {'A': 25, 'B': 40, 'C': 80, 'D': 80}
             for col, value in dims.items():
                 ws.column_dimensions[col].width = value
 
-            for row in ws.iter_rows(min_row=2):
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
                 for cell in row:
                     cell.alignment = Alignment(wrap_text=True, vertical='top', horizontal='left')
 
@@ -245,41 +268,61 @@ def process_all_words(input_path, results_path):
         except Exception as e:
             print(f"[!] Ошибка на слове {word}: {e}")
 
-#    df = pd.DataFrame(rows)
-
     # --- БЛОК МЕТРИК ---
-    # Считаем, сколько раз встретилась фраза "Ошибка парсинга" в каждой колонке
-    error_summary = (df == "Ошибка парсинга").sum()
-    total_errors = error_summary.drop("English Word", errors='ignore').sum()
+  #  df = pd.DataFrame(rows)
+    # Сбор статистики
     total_words = len(df)
 
-    print(f"\n" + "=" * 40)
-    print(f"📊 ОТЧЕТ ПО КАЧЕСТВУ (Всего слов: {total_words})")
-    print(f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯")
-    # Выводим статистику по каждой колонке
-    for column, count in error_summary.items():
-        if column != "English Word":  # Слово у нас всегда есть
-            print(f"• {column}: {count} ошибок")
-    # Считаем общий процент
-    error_rate = (total_errors / (total_words * 3)) * 100  # 3 колонки с контентом
-    print(f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯")
-    print(f"📈 Общий процент ошибок: {error_rate:.2f}%")
-    print("=" * 40)
+    # Функция детекции китайских иероглифов
+    def has_chinese(text):
+        return any('\u4e00' <= char <= '\u9fff' for char in str(text))
+
+    # Считаем иероглифы (хотя бы один в любой ячейке строки)
+    chinese_words_count = df.apply(lambda row: row.map(has_chinese).any(), axis=1).sum()
+
+    # Считаем ошибки парсинга по каждой колонке (кроме основного слова)
+    parsing_errors_by_col = (df == "Ошибка парсинга").sum().drop("English Word", errors='ignore')
+    total_parsing_errors = parsing_errors_by_col.sum()
+
+    # Считаем пустые ячейки (где только пробелы или пусто)
+    empty_cells = df.drop("English Word", axis=1, errors='ignore').applymap(lambda x: str(x).strip() == "").sum().sum()
+
+    # # Считаем галлюцинации (оценка Судьи 1 или 2)
+    # hallucinations = (df['Score'] <= 2).sum() if 'Score' in df.columns else 0
+
+    # --- ПЕЧАТЬ ОТЧЕТА ---
+    print(f"\n" + "=" * 45)
+    print(f"📊 ИТОГОВЫЙ ОТЧЕТ ПО КАЧЕСТВУ (Слов: {total_words})")
+    print(f"⎯" * 45)
+
+    print(f"❌ ТЕХНИЧЕСКИЙ БРАК:")
+    for column, count in parsing_errors_by_col.items():
+        print(f"  • {column}: {count} ошибок парсинга")
+    print(f"  • Пустых ячеек найдено: {empty_cells}")
+
+    # print(f"\n🧠 КАЧЕСТВО КОНТЕНТА (LLM Judge):")
+    # if 'Score' in df.columns:
+    #     avg_score = df['Score'].mean()
+    #     print(f"  • Средняя адекватность: {avg_score:.2f} / 5.0")
+    #     print(f"  • Галлюцинации (Score 1-2): {hallucinations}")
+
+    print(f"\n🇨🇳 ЛОКАЛИЗАЦИЯ:")
+    print(f"  • Слов с иероглифами: {chinese_words_count}")
+
+    # Итоговый Error Rate (Парсинг + Пустоты)
+    # Делим на (кол-во слов * 3 колонки контента)
+    total_content_cells = total_words * 3
+    if total_content_cells > 0:
+        error_rate = ((total_parsing_errors + empty_cells) / total_content_cells) * 100
+        print(f"⎯" * 45)
+        print(f"📈 ОБЩИЙ ПРОЦЕНТ ТЕХНИЧЕСКОГО БРАКА: {error_rate:.2f}%")
+
+    print("=" * 45)
+    print(f"Файл сохранен: {results_path}")
+
+
 
     print(f"\n--- Завершено. Таблица: {results_path} ---")
-
-
-    """ WRAP
-    from openpyxl.styles import Alignment
-
-# ... (после сохранения df.to_excel) ...
-with pd.ExcelWriter(output_excel, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
-    sheet = writer.sheets['Sheet1']
-    for row in sheet.iter_rows(min_row=2, max_col=5):
-        for cell in row:
-            cell.alignment = Alignment(wrap_text=True, vertical='top')
-
-    """
 
 
 # --- ЗАПУСК ---
@@ -303,7 +346,6 @@ if __name__ == "__main__":
     # analyze_frequency(OUTPUT_FILE, top_n=20)
 
     """ Подключаем GPT 
-    
     pip install huggingface_hub
     pip install bitsandbytes accelerate
     """
@@ -313,10 +355,7 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[✓] Using device: {device}")
 
-    #model_name = "meta-llama/Meta-Llama-3-8B-Instruct"  # требует верификафии перс.данных
-   # model_name = "mistralai/Mistral-7B-Instruct-v0.3"  # прямой конкурент Llama. быстрая и хорошо понимает инструкции - не идет загрузка
     model_name = "Qwen/Qwen2.5-7B-Instruct"  # Очень точные переводы и примеры
-   # model_name = "Vikhert/Vikhr-Llama-3.1-8B-Instruct-r24"  # "дообученная" Llama, которую российские разработчики адаптировали под русский язык
 
     # Создаем конфигурацию для 8-битного режима
     bnb_config = BitsAndBytesConfig(
@@ -333,102 +372,117 @@ if __name__ == "__main__":
         token=HF_TOKEN
     )
 
-
-    # system_prompt = """You are a professional linguist and historian. # TODO куда подсунуть?
-    # When translating a word:
-    # 1. Provide a precise Russian translation (5 examples maximum).
-    # 2. Give 3 vivid usage examples in context.
-    # 3. Briefly explain the origin (etymology) or a fun historical fact about the word.
-    # Keep the tone helpful and academic yet conversational."""
-
-    system_prompt = """Ты — профессиональный лингвист. Переводи английские слова для личного словаря. Начинай содержимое каждого пункта с новой строки сразу после заголовка.
-    Для каждого слова строго соблюдай структуру:
-    #### 1. Перевод на русский: только русские слова через запятую. постарайся найти 3-5 наиболее используемых вариантов.
-    #### 2. Примеры: 3 предложения на АНГЛИЙСКОМ, каждое - на новой строке, без перевода.
-    #### 3. Устоявшиеся выражения: если слово входит в какое-либо устоявшееся выражение, приведи пример на английском, с твоим комментарием или с исторической справкой на русском.
-    ВАЖНО: Пиши только на русском и английском. Избегай иероглифов и лишних пояснений. Отвечай структурировано и интересно."""
-
-    # # Проверка на первом слове из списка
-    #     # with open(OUTPUT_FILE, 'r', encoding='utf-8') as file:
-    #     #     first_word = file.readline().strip()
-    #     #
-    #     # print(f"\n--- Результат для слова: {first_word} ---")
-    #     # print(translate_word(first_word))
-
-    process_all_words(OUTPUT_FILE, EXCEL_FILE)
-
-#     # yield для файла # TODO
-#
-#     def word_generator(input_path):
-#     """Генератор, который читает файл и выдает по одному слову."""
-#     with open(input_path, 'r', encoding='utf-8') as f:
-#         for line in f:
-#             word = line.strip()
-#             if word:
-#                 yield word
-#
-# def translation_stream(input_path):
-#     """Генератор, который получает слово и возвращает готовый перевод."""
-#     for word in word_generator(input_path):
-#         print(f"--- Процессинг: {word} ---")
-#         try:
-#             # Твоя тяжелая функция с моделью
-#             result = translate_word(word)
-#             yield word, result
-#         except Exception as e:
-#             print(f"Ошибка на {word}: {e}")
-#             continue
-#
-# # --- ОСНОВНОЙ ЗАПУСК ---
-# if __name__ == "__main__":
-#     # Теперь мы просто 'подписываемся' на поток переводов
-#     for word, translation in translation_stream(OUTPUT_FILE):
-#         with open(RESULTS_FILE, 'a', encoding='utf-8') as out_f:
-#             out_f.write(f"\n{'='*30}\nWORD: {word.upper()}\n{translation}\n{'='*30}\n")
-#         print(f"[✓] {word} записано.")
-
-
-
-
-#   # Читаем слова по N штук
-#   with open(OUTPUT_FILE, 'r', encoding='utf-8') as fIle:
-#       words_to_process = [line.strip() for line in fIle if line.strip()][:5]
-#
-# #  words_list = "\n".join([f"- {w}" for w in words])
-  #
-  #   for word in words_to_process:
-  #       messages = [
-  #           {"role": "system", "content": system_prompt},
-  #           {"role": "user", "content": f"Переведи слово: {word}"}
-  #       ]
-  #
-  #       text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-  #       model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-  #
-  #       generated_ids = model.generate(**model_inputs, max_new_tokens=512, temperature=0.7)
-  #       response = tokenizer.batch_decode(generated_ids[:, model_inputs.input_ids.shape[1]:], skip_special_tokens=True)[0]
-  #
-  #       print(f"\n=== {word.upper()} ===\n{response}")
-
-
-    # """ Llama-3 Prompt """
-    # messages = [
-    #     {"role": "system",
-    #      "content": "You are a professional linguist. Translate English words to Russian and provide 3 usage examples in Russian for each."},
-    #     {"role": "user", "content": f"Translate these words:\n{words_list}"},
-    # ]
-    # prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-    # # Generation
-    # inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    # system_prompt = """You are a professional linguist. Use ONLY English and Russian. NO Chinese.
+    # For each word, follow this EXACT structure:
     #
-    # # Increase max_new_tokens for 10 words + examples
-    # outputs = model.generate(
-    #     **inputs,
-    #     max_new_tokens=1500,
-    #     temperature=0.6,
-    #     top_p=0.9,
-    #     eos_token_id=tokenizer.eos_token_id
-    # )
+    # [TRANSLATION]
+    # (Russian translation only, 3-5 variants)
     #
-    # print(tokenizer.decode(outputs[0][len(inputs["input_ids"][0]):], skip_special_tokens=True))
+    # [EXAMPLES]
+    # (3 English sentences only, no translation)
+    #
+    # [PHRASES]
+    # (English idioms with Russian comments)
+    # """
+
+    prompt_en_1 = """You are a precise English-Russian dictionary bot. 
+    Use ONLY English and Russian. NO Chinese characters.
+    Structure your response EXACTLY as follows:
+
+    [T]
+    (3-5 Russian translations, comma separated)
+
+    [E]
+    (3 English example sentences, each on a new line, with russian translation, hyphen separated)
+
+    [P]
+    (3 English phrases or idioms with brief Russian comments)"""
+
+    prompt_en_2 = """You are a precise English-Russian dictionary bot. 
+    STRICT RULES:
+    1. Use ONLY English and Russian. NO Chinese characters.
+    2. DO NOT use rare or non-eexisent meanings.
+    3. START each section strictly with the tags [T], [E], and [P].
+
+    [T]
+    (3-5 Russian translations, comma separated)
+
+    [E]
+    (3 English example sentences, each on a new line, with russian translation, hyphen separated)
+
+    [P]
+    (3 English phrases/idioms with Russian comments)"""
+
+    prompt_en_3 = """You are a professional linguist. 
+    STRICT RULES:
+    1. Use ONLY English and Russian. NO Chinese characters or translations.
+    2. DO NOT use rare or non-exisent meanings.
+    3. START each section strictly with the tags [T], [E], and [P].
+
+    [T]
+    (3-5 Russian translations of this word, each translation on a new line)
+
+    [E]
+    (3 English example sentences using this word, each on a new line, with russian translation after hyphen)
+
+    [P]
+    (3 English well-known phrases or idioms using this word, each on a new line, with russian translation after hyphen)"""
+
+    prompt_en_4 = """You are a translation engine. 
+    RULES:
+    1. ONLY English and Cyrillic Russian. 
+    2. NO Chinese/Asian characters.
+    3. If you see Chinese in your thoughts, DELETE it.
+
+    FORMAT:
+    [T]
+    (Russian words only)
+    [E]
+    (English sentence - Russian translation)
+    [P]
+    (English idiom - Russian translation)"""
+
+    prompt_en_5 = """You are a translation engine. 
+    RULES:
+    1. ONLY English and Cyrillic Russian. 
+    2. NO Chinese/Asian characters.
+    3. If you see Chinese in your thoughts, DELETE it.
+    4. DO NOT use rare or non-exisent meanings.
+    5. START each section strictly with the tags [T], [E], and [P].
+
+    FORMAT:
+    [T]
+    (3-5 Russian translations of this word, each translation on a new line)
+    [E]
+    (3 English example sentences using this word, each on a new line, with russian translation after hyphen)
+    [P]
+    (3 English well-known phrases or idioms using this word, each on a new line, with russian translation after hyphen)"""
+
+
+
+    prompt_ru_1 = """Ты — профессиональный лингвист. Переводи английские слова для личного словаря.
+    Используй ТОЛЬКО русский и английский языки. КАТЕГОРИЧЕСКИ запрещено использовать иероглифы.
+    Для каждого слова СТРОГО соблюдай структуру ответа:
+
+    [T]
+    (здесь только перевод на РУССКИЙ через запятую, 3-5 слов, в зависимости от количества разных значений слова)
+
+    [E]
+    (здесь 3 примера на английском, с переводом на русский через дефис)
+
+    [P]
+    (здесь устоявшиеся выражения с этим словом с комментариями на русском)
+    """
+
+    judge_prompt = """You are a strict linguistic auditor. 
+    Evaluate the translation quality between English and Russian.
+    Rate the 'Adequacy' from 1 to 5:
+    5 - Perfect translation.
+    4 - Good, but slightly rare meaning.
+    3 - Correct word, but weird context.
+    2 - Wrong meaning or invented word (hallucination).
+    1 - Total nonsense or gibberish.
+
+    Respond ONLY with a single number."""
+
+    process_all_words(OUTPUT_FILE, EXCEL_FILE, prompt_en_4)
