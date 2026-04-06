@@ -105,6 +105,7 @@ class BatchEnglishExtractor:
 from collections import Counter
 import pandas as pd
 
+
 def analyze_frequency(input_file, top_n=10):
     """Считает частотность и выводит статистику в консоль."""
     with open(input_file, 'r', encoding='utf-8') as file:
@@ -149,7 +150,8 @@ def remove_top_noise(input_file, noise_count=7):
             f.write(f"{word}\n")
 
     print(f"Файл {input_file} очищен от шума")
-    return filtered_words # Опционально
+    return filtered_words  # Опционально
+
 
 def remove_duplicates(input_file):
     """Читает файл и возвращает список уникальных слов в порядке их появления."""
@@ -165,10 +167,10 @@ def remove_duplicates(input_file):
 
     print(f"Файл {input_file} успешно обновлен.")
 
-    return unique_words # Опционально
+    return unique_words  # Опционально
 
 
-def translate_word(word, system_prompt):
+def translate_word(word, system_prompt, temperature=0.1, do_sample=False):
     """Генерирует перевод и справку для одного слова."""
     messages = [
         {"role": "system", "content": system_prompt},
@@ -179,11 +181,12 @@ def translate_word(word, system_prompt):
     inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
     # Генерируем ответ
-    outputs = model.generate(**inputs, max_new_tokens=800, temperature=0.1, do_sample=False) # низкая temperature=0.1. Для таблиц нам нужна максимальная строгость, а не творчество
+    outputs = model.generate(**inputs, max_new_tokens=800, temperature=temperature, do_sample=do_sample)
 
     # Декодируем срезаем промпт, оставляем только ответ)
     response = tokenizer.decode(outputs[0][len(inputs.input_ids[0]):], skip_special_tokens=True)
     return response
+
 
 def judge_adequacy(word, translation, judge_system_prompt):
     """Модель оценивает свою (или чужую) работу."""
@@ -205,8 +208,25 @@ def judge_adequacy(word, translation, judge_system_prompt):
     match = re.search(r'\d', score_raw)
     return int(match.group()) if match else 0  # Возвращаем цифру или 0, если модель промолчала
 
+
 def process_all_words(input_path, results_path, system_prompt, judge_system_prompt):
     """Читает список слов и сохраняет переводы по одному."""
+    # Функция детекции китайских иероглифов
+    def has_chinese(text):
+        return any('\u4e00' <= char <= '\u9fff' for char in str(text))
+
+    def has_unexpected_chars(text):
+        # 1. Проверка на китайские иероглифы
+        has_chinese = any('\u4e00' <= char <= '\u9fff' for char in str(text))
+
+        # 2. Проверка на "мусорные" символы:
+        # Ищем всё, что НЕ: латиница, кириллица, цифры, пробелы и пунктуация (. , ! ? - : ; ( ) [ ] " ')
+        # Регулярка [^...] означает "всё, кроме перечисленного"
+        bad_chars = re.findall(r'[^a-zA-Zа-яА-ЯёЁ0-9\s\.,!\?\-\:\;\(\)\[\]"\'«»—]', str(text))
+        # Исключаем из "плохих" символов перенос строки, чтобы не ломать парсинг
+        bad_chars = [c for c in bad_chars if c not in ['\n', '\r']]
+
+        return has_chinese or len(bad_chars) > 0
 
     # Список для накопления строк таблицы
     rows = []
@@ -220,7 +240,52 @@ def process_all_words(input_path, results_path, system_prompt, judge_system_prom
 
     for word in words_to_process:
         try:
-            raw_response = translate_word(word, system_prompt) # функция перевода
+            max_attempts = 5
+            attempt = 0
+            success = False
+            final_raw = ""
+            final_score = 0
+
+            # --- ЦИКЛ RETRY LOOP для рестарта перевода, если он неудовлетворителен ---
+            while attempt < max_attempts and not success:
+                attempt += 1
+
+                # Первая попытка: железная строгость. Пересдача: добавляем "вариативность", чтобы выйти из тупика
+                curr_temp = 0.1 if attempt == 1 else 0.7
+                curr_sample = False if attempt == 1 else True
+
+                current_prompt = system_prompt
+                if attempt > 1:
+                    # Усиливаем требования при повторной попытке
+                    current_prompt  = system_prompt + f"\n\nCRITICAL ERROR: Your previous translation for '{word}' was REJECTED as a hallucination. " \
+                                      f"DO NOT use non-existent words like 'себяг'. Use REAL Russian dictionary definitions." \
+                                      f"All [T], [E], [P] sections must be present. NO Chinese. Presence of the target word in examples."
+
+                # 1. Генерируем "сырой" ответ, с заменой температуры и сэмплами, если попыток > 1
+                final_raw = translate_word(word, current_prompt, temperature=curr_temp, do_sample=curr_sample)
+
+                # 2. ТЕХНИЧЕСКАЯ ПРОВЕРКА НАЛИЧИЯ ТЕГОВ (tags_present)
+                tags_present = all(tag in final_raw for tag in ["[T]", "[E]", "[P]"])
+
+                # 3. ВЫЗЫВАЕМ СУДЬЮ
+                final_score = judge_adequacy(word, final_raw, judge_system_prompt)
+
+                # 4. Проверяем на неожиданные символы
+                unexpected_chars = has_unexpected_chars(final_raw)
+
+                # УСЛОВИЕ УСПЕХА: Score >= 4 + все теги на месте + нет китайского
+                fails = []
+                if not tags_present: fails.append("пустые теги")
+                if unexpected_chars: fails.append("неожиданные символы/иероглифы")
+                if final_score < 4: fails.append(f"низкий score {final_score}")
+
+                if not fails:  # Если список пуст — значит всё отлично
+                    success = True
+                    print(f"  [✓] {word}: Успех с попытки {attempt}")
+                else:
+                    # Соединяем все ошибки через запятую
+                    reason = ", ".join(fails)
+                    print(f"  [!] {word}: Попытка {attempt} не удалась ({reason}).")
 
             # # # --- РАЗБИВКА ТЕКСТА ---
 
@@ -228,24 +293,23 @@ def process_all_words(input_path, results_path, system_prompt, judge_system_prom
             # Ищем блоки с помощью "заглядывания вперед" (?=\[|$) :
             # Бери весь текст, пока не встретишь ЛИБО начало следующего тега [, ЛИБО самый конец сообщения $
             # Это позволяет найти текст, даже если это последний блок в ответе
-            t_match = re.search(r'\[T\]\s*(.*?)\s*(?=\[|$)', raw_response, re.DOTALL)
-            e_match = re.search(r'\[E\]\s*(.*?)\s*(?=\[|$)', raw_response, re.DOTALL)
-            p_match = re.search(r'\[P\]\s*(.*?)\s*(?=\[|$)', raw_response, re.DOTALL)
+            t_match = re.search(r'\[T\]\s*(.*?)\s*(?=\[|$)', final_raw, re.DOTALL)
+            e_match = re.search(r'\[E\]\s*(.*?)\s*(?=\[|$)', final_raw, re.DOTALL)
+            p_match = re.search(r'\[P\]\s*(.*?)\s*(?=\[|$)', final_raw, re.DOTALL)
 
             # Безопасно извлекаем текст. Если блок найден (.group(1)), чистим его (.strip()), если нет — пишем ошибку.
-            res_t = t_match.group(1).strip() if t_match else "Ошибка парсинга"
-            res_e = e_match.group(1).strip() if e_match else "Ошибка парсинга"
-            res_p = p_match.group(1).strip() if p_match else "Ошибка парсинга"
+            res_t = t_match.group(1).strip() if t_match else "Parsing error"
+            res_e = e_match.group(1).strip() if e_match else "Parsing error"
+            res_p = p_match.group(1).strip() if p_match else "Parsing error"
 
-            # ВЫЗЫВАЕМ СУДЬЮ для проверки колонки Translation
-            score = judge_adequacy(word, res_t, judge_system_prompt)
-
-            # Добавляем логику: если оценка низкая, помечаем слово
-            if score <= 2:
-                status = "⚠ Галлюцинация"
-                res_t = f"[{score}/5] {res_t}"  # Добавляем оценку прямо в текст для наглядности
+            # Определяем финальный скор для таблицы
+            if not success:
+                status = "⚠ Галлюцинация" if final_score <= 2 else "⚠ Требует правки"
             else:
                 status = "✓ OK"
+
+            # # Если судья поставил 1-2, помечаем прямо в ячейке перевода
+            # display_translation = f"[{final_score}/5] {res_t}" if final_score <= 2 else res_t
 
             # Записываем в итоговый список (добавляем новые колонки)
             rows.append({
@@ -253,18 +317,19 @@ def process_all_words(input_path, results_path, system_prompt, judge_system_prom
                 "Translation": res_t,
                 "Examples": res_e,
                 "Phrases": res_p,
-                "Score": score,  # колонка с цифрой
+                "Score": final_score,  # колонка с цифрой
                 "Status": status  # колонка с вердиктом
             })
 
             # Сохраняем
             df = pd.DataFrame(rows)
-            df.to_excel(results_path, index=False, engine='openpyxl') #  сохраняем отформатированные данные с помощью openpyxl
+            df.to_excel(results_path, index=False,
+                        engine='openpyxl')  # сохраняем отформатированные данные с помощью openpyxl
 
             # --- блок для красивого форматирования ---
             wb = load_workbook(results_path)
             ws = wb.active
-             # TODO Если заметишь замедление, просто вынеси блок с load_workbook и Alignment за пределы цикла for, чтобы отформатировать всё один раз в самом конце. Но пока слов немного — оставляй внутри для надежности.
+            # TODO Если заметишь замедление, просто вынеси блок с load_workbook и Alignment за пределы цикла for, чтобы отформатировать всё один раз в самом конце. Но пока слов немного — оставляй внутри для надежности.
 
             # Задаем ширину колонок: Слово(15), Перевод(25), Остальное(50)
             dims = {'A': 25, 'B': 35, 'C': 75, 'D': 75, 'E': 10, 'F': 20}
@@ -276,7 +341,7 @@ def process_all_words(input_path, results_path, system_prompt, judge_system_prom
                     cell.alignment = Alignment(wrap_text=True, vertical='top', horizontal='left')
 
             wb.save(results_path)
-            print(f"[✓] {word} успешно добавлено в таблицу")
+            print(f"[✓] {word} добавлено в таблицу")
 
         except Exception as e:
             print(f"[!] Ошибка на слове {word}: {e}")
@@ -284,18 +349,14 @@ def process_all_words(input_path, results_path, system_prompt, judge_system_prom
     # --- БЛОК МЕТРИК ---
     df = pd.DataFrame(rows)  # опционально. чтобы данные были доступны
 
-    # 1. Список колонок для проверки (чтобы Score и Status не портили статистику)
+    # Список колонок для проверки (чтобы Score и Status не портили статистику)
     content_cols = ["Translation", "Examples", "Phrases"]
 
-    # 2. Функция детекции китайских иероглифов
-    def has_chinese(text):
-        return any('\u4e00' <= char <= '\u9fff' for char in str(text))
-
-    # 3. Сбор статистики
+    # Сбор статистики
     total_words = len(df)
 
     # Считаем ошибки парсинга только в контентных колонках
-    parsing_errors_by_col = (df[content_cols] == "Ошибка парсинга").sum()
+    parsing_errors_by_col = (df[content_cols] == "Parsing error").sum()
     total_parsing_errors = parsing_errors_by_col.sum()
 
     # Считаем пустые ячейки (используем .map вместо устаревшего .applymap)
@@ -331,6 +392,7 @@ def process_all_words(input_path, results_path, system_prompt, judge_system_prom
         print(f"📈 ОБЩИЙ ПРОЦЕНТ ТЕХНИЧЕСКОГО БРАКА: {error_rate:.2f}%")
 
     print("=" * 45)
+
 
 # --- ЗАПУСК ---
 if __name__ == "__main__":
@@ -369,176 +431,85 @@ if __name__ == "__main__":
         load_in_8bit=True
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, token=HF_TOKEN) # TODO объяснить
+    tokenizer = AutoTokenizer.from_pretrained(model_name, token=HF_TOKEN)  # TODO объяснить
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-      #  torch_dtype=torch.float16,
+        #  torch_dtype=torch.float16,
         device_map="auto",
         quantization_config=bnb_config,  # если не хватает памяти. или load_in_4bit=True
-        low_cpu_mem_usage=True, # Загрузка по частям и  создание пустого каркаса
+        low_cpu_mem_usage=True,  # Загрузка по частям и  создание пустого каркаса
         token=HF_TOKEN
     )
 
-    # system_prompt = """You are a professional linguist. Use ONLY English and Russian. NO Chinese.
-    # For each word, follow this EXACT structure:
-    #
-    # [TRANSLATION]
-    # (Russian translation only, 3-5 variants)
-    #
-    # [EXAMPLES]
-    # (3 English sentences only, no translation)
-    #
-    # [PHRASES]
-    # (English idioms with Russian comments)
-    # """
-
-    prompt_en_1 = """You are a precise English-Russian dictionary bot. 
-    Use ONLY English and Russian. NO Chinese characters.
-    Structure your response EXACTLY as follows:
-
-    [T]
-    (3-5 Russian translations, comma separated)
-
-    [E]
-    (3 English example sentences, each on a new line, with russian translation, hyphen separated)
-
-    [P]
-    (3 English phrases or idioms with brief Russian comments)"""
-
-    prompt_en_2 = """You are a precise English-Russian dictionary bot. 
-    STRICT RULES:
-    1. Use ONLY English and Russian. NO Chinese characters.
-    2. DO NOT use rare or non-eexisent meanings.
-    3. START each section strictly with the tags [T], [E], and [P].
-
-    [T]
-    (3-5 Russian translations, comma separated)
-
-    [E]
-    (3 English example sentences, each on a new line, with russian translation, hyphen separated)
-
-    [P]
-    (3 English phrases/idioms with Russian comments)"""
-
-    prompt_en_3 = """You are a professional linguist. 
-    STRICT RULES:
-    1. Use ONLY English and Russian. NO Chinese characters or translations.
-    2. DO NOT use rare or non-exisent meanings.
-    3. START each section strictly with the tags [T], [E], and [P].
-
-    [T]
-    (3-5 Russian translations of this word, each translation on a new line)
-
-    [E]
-    (3 English example sentences using this word, each on a new line, with russian translation after hyphen)
-
-    [P]
-    (3 English well-known phrases or idioms using this word, each on a new line, with russian translation after hyphen)"""
-
-    prompt_en_4 = """You are a translation engine. 
+    prompt_en_8_examples = """You are a translation engine. 
     RULES:
-    1. ONLY English and Cyrillic Russian. 
-    2. NO Chinese/Asian characters.
-    3. If you see Chinese in your thoughts, DELETE it.
-
-    FORMAT:
-    [T]
-    (Russian words only)
-    [E]
-    (English sentence - Russian translation)
-    [P]
-    (English idiom - Russian translation)"""
-
-    prompt_en_5 = """You are a translation engine. 
-    RULES:
-    1. ONLY English and Cyrillic Russian. 
-    2. NO Chinese/Asian characters.
-    3. If you see Chinese in your thoughts, DELETE it.
-    4. DO NOT use rare or non-exisent meanings.
-    5. START each section strictly with the tags [T], [E], and [P].
-
-    FORMAT:
-    [T]
-    (3-5 Russian translations of this word, each translation on a new line)
-    [E]
-    (3 English example sentences using this word, each on a new line, with russian translation after hyphen)
-    [P]
-    (3 English well-known phrases or idioms using this word, each on a new line, with russian translation after hyphen)"""
-
-    prompt_en_6 = """You are a translation engine. 
-    RULES:
-    1. ONLY English and Cyrillic Russian. 
-    2. NO Chinese/Asian characters.
-    3. If you see Chinese in your thoughts, DELETE it.
-    4. DO NOT use rare or non-exisent meanings.
-    5. START each section strictly with the tags [T], [E], and [P].
-
-    FORMAT:
-    [T]
-    (3-5 Russian translations of this word, each translation on a new line)
-    [E]
-    (3 example sentences using this word IN ENGLISH, each on a new line + hyphen + russian translation)
-    [P]
-    (3 well-known phrases or idioms using this word IN ENGLISH, each on a new line + hyphen + russian translation)"""
-
-    prompt_en_7 = """You are a translation engine. 
-    RULES:
-    1. ONLY English and Cyrillic Russian. 
+    1. ONLY English and Russian languages used.
     2. NO Chinese/Asian characters or translations.
     3. If you see Chinese in your thoughts, DELETE it.
     4. DO NOT use rare or non-exisent meanings.
-    5. START each section strictly with the tags [T], [E], and [P].
-
+    5. DO NOT make words up
+    6. START each section strictly with the tags [T], [E], and [P].
+    7. Each section tag must be filled. There must not be parsing errors
+    8. Examples and phrases are well-composed and correctly translated to Russian
+    9. [E] and [P]: Examples contain ONLY ENGLISH
+    10. [E] and [P]: Example translations contain ONLY RUSSIAN
+    11. [P]: If there are no well-known/set phrase with this word, it's allowed to leave "Not found"
+    
     FORMAT:
     [T]
-    (3-5 Russian translations of this word, each on a new line)
+    (3-5 the most common Russian translations of this word, each on a new line)
     [E]
-    (3 example sentences using this word IN ENGLISH, each on a new line + hyphen + russian translation)
+    (3 example phrases or full sentences using this word IN ENGLISH, each on a new line + hyphen + russian translation)
     [P]
-    (3 well-known phrases or idioms using this word IN ENGLISH, each on a new line + hyphen + russian translation)"""
+    (1-3 set/well-known/slang phrases, or idioms (if they exist) using this word IN ENGLISH, each on a new line + hyphen + russian translation)
 
-    prompt_ru_1 = """Ты — профессиональный лингвист. Переводи английские слова для личного словаря.
-    Используй ТОЛЬКО русский и английский языки. КАТЕГОРИЧЕСКИ запрещено использовать иероглифы.
-    Для каждого слова СТРОГО соблюдай структуру ответа:
-
+    EXAMPLE:
+    Input: quizzically
+    Output: 
     [T]
-    (здесь только перевод на РУССКИЙ через запятую, 3-5 слов, в зависимости от количества разных значений слова)
-
+    насмешливо
+    чудаковато
+    с недоумением
     [E]
-    (здесь 3 примера на английском, с переводом на русский через дефис)
-
+    She was sitting with her head quizzically tilted - она сидела с головой, наклоненной чудаковатым образом
     [P]
-    (здесь устоявшиеся выражения с этим словом с комментариями на русском)
-    """
+    With a quizzical expression - с недоумением"""
 
-    judge_prompt = """You are a strict linguistic auditor. 
-    Evaluate the translation quality between English and Russian.
-    Rate the 'Adequacy' from 1 to 5:
-    5 - Perfect translation.
-    4 - Good, but slightly rare meaning.
-    3 - Correct word, but weird context.
-    2 - Wrong meaning or invented word (hallucination).
-    1 - Total nonsense or gibberish.
-    Hallucinations like 'себяг' or 'свинья-кобель' must be rated 1.
-
-    Respond ONLY with a single number from 1 to 5."""
-
-    judge_prompt_en_2 = """You are a ruthless Linguistic Auditor. 
+    judge_prompt_en_3 = """You are a ruthless Linguistic Auditor. 
     Your goal is to find errors in a dictionary entry. 
-    
-    CRITICAL ERRORS (Score 1 or 2):
-    - Any Chinese/Asian characters found.
+
+    CRITICAL ERRORS
+    Score 1:
     - The Russian translation is a made-up word (hallucination like 'себяг').
-    - The Russian translation is completely unrelated to the English word.
+    - The Russian translation is not found or empty
+    - "Parsing error" in any section ([T], [E], or [P])
     
+    Score 2:
+    - Any Chinese/Asian characters found in any section ([T], [E], or [P]).
+    - The Russian translation is completely unrelated to the English word or phrase.
+    - Numbers found in any section
+    - ([E] and [P] sections) the examples do not contain the word
+
     MINOR ERRORS (Score 3):
-    - Only one translation provided instead of 3-5.
+    - All 3 sections ([T], [E], or [P]) are present.
+    - ([T] section) Only one translation provided instead of 3-5.
     - Russian grammar is broken.
+    - The Russian translation is not the most common to the word
+    - ([E] and [P] sections) Russian translation of phrases is incorrect
     
+    GOOD (Score 4):
+    - All 3 sections ([T], [E], or [P]) are present and accurate.
+    - ONLY English and Russian languages used.
+    - ([T] section) at least 2 accurate Russian words, corresponding the most common translation of the word.
+    - ([E] section) at least 3 suitable well-written examples provided in english with correct Russian translation
+
     PERFECT (Score 5):
-    - 3-5 accurate Russian words.
-    - ONLY Cyrillic and Latin characters used.
-    
+    - All 3 sections ([T], [E], or [P]) are present and accurate.
+    - ONLY English and Russian languages used.
+    - ([T] section) at least 3 accurate Russian words, corresponding the most common translation of the word.
+    - ([E] section) at least 3 suitable well-written examples provided in english with correct Russian translation
+    - ([P] section) at least 1 suitable phrase provided in english with correct Russian translation
+
     Respond ONLY with a single number from 1 to 5."""
 
-    process_all_words(OUTPUT_FILE, EXCEL_FILE, prompt_en_7, judge_prompt_en_2)
+    process_all_words(OUTPUT_FILE, EXCEL_FILE, prompt_en_8_examples, judge_prompt_en_3)
