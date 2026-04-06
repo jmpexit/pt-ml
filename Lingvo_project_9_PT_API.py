@@ -11,7 +11,7 @@ from spellchecker import SpellChecker
 from tqdm.auto import tqdm
 from openpyxl.styles import Alignment
 from openpyxl import load_workbook
-from time import sleep
+import time
 
 from collections import Counter
 import pandas as pd
@@ -174,7 +174,7 @@ class EnglishContextTranslator:
         print("--- Инициализация ---")
         # Создаем клиент один раз при создании экземпляра класса
         self.api_key = api_key
-        self.client = OpenAI(api_key=api_key,base_url="https://api-llm.ml.ptsecurity.ru/v1")
+        self.client = OpenAI(api_key=api_key,base_url="https://api-llm.ml.ptsecurity.ru/v1", timeout=120.0)
         self.model = "zai-org/GLM-47-Flash"
 
         # Используем PyTorch для проверки GPU (так как он у вас точно работает)
@@ -201,7 +201,7 @@ class EnglishContextTranslator:
         except Exception as e:
             if "429" in str(e):
                 print("🛑 Лимит модели. Ждем 15 сек...")
-                sleep(15)
+                time.sleep(15)
                 return self.translate_word(word, system_prompt)  # Повторная попытка
             else:
                 print(f"API Error on word {word}: {e}")
@@ -209,7 +209,6 @@ class EnglishContextTranslator:
 
     def judge_adequacy(self, word, translation, judge_system_prompt):
         """Модель оценивает свою (или чужую) работу через API"""
-        sleep(1)
         audit_content = f"Word: {word}\nTranslation: {translation}\nRate adequacy (1-5):"
         try:
             response = self.client.chat.completions.create(
@@ -230,7 +229,7 @@ class EnglishContextTranslator:
         except Exception as e:
             if "429" in str(e):
                 print(f"🛑 Лимит модели для Judge на '{word}'. Ждем 15 сек...")
-                sleep(15)
+                time.sleep(15)
                 return self.judge_adequacy(word, translation, judge_system_prompt)
             else:
                 print(f"[!] Ошибка судьи на слове {word}: {e}")
@@ -267,7 +266,11 @@ class EnglishContextTranslator:
 
         print(f"Начинаю перевод {len(words_to_process)} слов в таблицу...")
 
+        total_start_time = time.time()  # Общее время
+        word_times = []  # Список для хранения времени каждого слова
+
         for word in words_to_process:
+            word_start = time.time()
             try:
                 max_attempts = 3
                 attempt = 0
@@ -373,7 +376,15 @@ class EnglishContextTranslator:
 
             except Exception as e:
                 print(f"[!] Ошибка на слове {word}: {e}")
-            sleep(4)
+
+            time.sleep(0.5)
+            word_end = time.time()
+            duration = word_end - word_start
+            word_duration = time.time() - word_start - 0.5
+            word_times.append(word_duration)
+            print(f"  ⏱ Время обработки '{word}': {word_duration:.2f} сек.")
+
+        total_duration = time.time() - total_start_time
 
         # --- БЛОК МЕТРИК ---
         df = pd.DataFrame(self.rows)  # опционально. чтобы данные были доступны
@@ -395,6 +406,13 @@ class EnglishContextTranslator:
         chinese_count = df.apply(lambda row: row.map(self.has_chinese).any(), axis=1).sum()
 
         # --- ПЕЧАТЬ ОТЧЕТА ---
+        if word_times:
+            avg_time = sum(word_times) / len(word_times)
+            print(f"\n⏱ ТАЙМИНГИ (Qwen 397B):")
+            print(f"  • Всего затрачено: {total_duration / 60:.1f} мин.")
+            print(f"  • Среднее на 1 слово: {avg_time:.2f} сек.")
+            print(f"  • Примерно на 10 слов: {avg_time * 10:.1f} сек.")
+
         print(f"\n" + "=" * 45)
         print(f"📊 ИТОГОВЫЙ ОТЧЕТ ПО КАЧЕСТВУ (Слов: {total_words})")
         print(f"⎯" * 45)
@@ -599,8 +617,8 @@ if __name__ == "__main__":
 
     translator = EnglishContextTranslator(api_key=PT_API_KEY)
 
-    translator.process_all_words(OUTPUT_FILE_TINY, EXCEL_FILE, prompt_en_8_examples, judge_prompt_en_3)
-    # translator.process_all_words(OUTPUT_FILE_TINY, EXCEL_FILE, prompt_en_9, judge_prompt_en_4)
+    #translator.process_all_words(OUTPUT_FILE_TINY, EXCEL_FILE, prompt_en_8_examples, judge_prompt_en_3)
+    translator.process_all_words(OUTPUT_FILE_TINY, EXCEL_FILE, prompt_en_9, judge_prompt_en_4)
 
     """
     Идея: Если хочешь идеала, можно добавить в current_prompt для 3-й попытки фразу: "If you are failing, try to look for a completely different meaning of the word."
