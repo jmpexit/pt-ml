@@ -175,7 +175,8 @@ class EnglishContextTranslator:
         # Создаем клиент один раз при создании экземпляра класса
         self.api_key = api_key
         self.client = OpenAI(api_key=api_key,base_url="https://api-llm.ml.ptsecurity.ru/v1", timeout=120.0)
-        self.model = "zai-org/GLM-47-Flash"
+        self.model = "Qwen/Qwen35-397B-A17B-FP8"
+       # self.model = "openai/gpt-oss-120b"
 
         # Используем PyTorch для проверки GPU (так как он у вас точно работает)
         self.use_gpu = torch.cuda.is_available()
@@ -197,7 +198,16 @@ class EnglishContextTranslator:
                 stream=False,
                 temperature=0.1  # Оставляем нашу строгость
             )
-            return response.choices[0].message.content
+            if not response or not response.choices:
+                return "Parsing error"
+
+            answer = response.choices[0].message.content
+
+            if not answer or answer.strip() == "":
+                print(f"  [!] Пустой текст ответа для '{word}'.")
+                return "Parsing error"
+            return answer.strip()
+
         except Exception as e:
             if "429" in str(e):
                 print("🛑 Лимит модели. Ждем 15 сек...")
@@ -205,7 +215,7 @@ class EnglishContextTranslator:
                 return self.translate_word(word, system_prompt)  # Повторная попытка
             else:
                 print(f"API Error on word {word}: {e}")
-                return "Ошибка API"
+                return "Parsing error"
 
     def judge_adequacy(self, word, translation, judge_system_prompt):
         """Модель оценивает свою (или чужую) работу через API"""
@@ -220,9 +230,14 @@ class EnglishContextTranslator:
                 stream=False,
                 temperature=0.1
             )
-            answer = response.choices[0].message.content  # правильный путь к тексту в API
+            if not response or not response.choices:
+                return 0
 
-            # Вытаскивается цифра из ответа API
+            answer = response.choices[0].message.content
+
+            if not answer or answer.strip() == "":
+                return 0
+
             match = re.search(r'\d', answer)
             return int(match.group()) if match else 0
 
@@ -234,7 +249,6 @@ class EnglishContextTranslator:
             else:
                 print(f"[!] Ошибка судьи на слове {word}: {e}")
                 return 0
-
 
     # Функция детекции китайских иероглифов
     def has_chinese(self, text):
@@ -408,10 +422,10 @@ class EnglishContextTranslator:
         # --- ПЕЧАТЬ ОТЧЕТА ---
         if word_times:
             avg_time = sum(word_times) / len(word_times)
-            print(f"\n⏱ ТАЙМИНГИ (Qwen 397B):")
+            print(f"\n⏱ ТАЙМИНГИ {self.model}:")
             print(f"  • Всего затрачено: {total_duration / 60:.1f} мин.")
             print(f"  • Среднее на 1 слово: {avg_time:.2f} сек.")
-            print(f"  • Примерно на 10 слов: {avg_time * 10:.1f} сек.")
+            print(f"  • Среднее на {len(words_to_process)} слов: {avg_time * len(words_to_process):.1f} сек.")
 
         print(f"\n" + "=" * 45)
         print(f"📊 ИТОГОВЫЙ ОТЧЕТ ПО КАЧЕСТВУ (Слов: {total_words})")
