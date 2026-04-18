@@ -24,6 +24,7 @@ from envs import OPENROUTER_TOKEN, HF_TOKEN, DEEPSEEK_API_KEY, PT_API_KEY
 BASE_PATH = r"C:\Users\Julie\PycharmProjects\pt-ml\datasets\lingvo"
 train_path = r"C:\Users\Julie\PycharmProjects\pt-ml\datasets\lingvo\train\train_set"
 full_set_path = r"C:\Users\Julie\PycharmProjects\pt-ml\datasets\lingvo\full_pics_lib"
+v_set_path = r"C:\Users\Julie\PycharmProjects\pt-ml\datasets\lingvo\vampire_lib"
 OUTPUT_FILE = os.path.join(BASE_PATH, "submission_final.csv")
 OUTPUT_FILE_TINY = os.path.join(BASE_PATH, "submission_final_tiny.csv")
 CSV_FILE = os.path.join(BASE_PATH, "translated_csv_dictionary.csv")
